@@ -2900,4 +2900,72 @@ mod tests {
 			delay: 0,
 		})));
 	}
+
+	/// For any byte array, if `UncheckedExtrinsic::decode_all` succeeds,
+	/// then re-encoding must produce the exact same bytes.
+	///
+	/// This is the "no information loss" roundtrip property:
+	///   ∀ bytes: decode_all(bytes) = Ok(ext) ⟹ ext.encode() = bytes
+	#[test]
+	fn unchecked_extrinsic_decode_encode_roundtrip() {
+		use codec::{DecodeAll, Encode};
+
+		fn check_roundtrip(input: &[u8]) -> bool {
+			if let Ok(ext) = UncheckedExtrinsic::decode_all(&mut &input[..]) {
+				let re_encoded = ext.encode();
+				assert_eq!(
+					input, re_encoded.as_slice(),
+					"Roundtrip failed: decode_all succeeded but encode produced different bytes \
+					 (input len = {})",
+					input.len()
+				);
+				true
+			} else {
+				false
+			}
+		}
+
+		// Simple LCG PRNG for deterministic random bytes.
+		let mut seed: u64 = 0xdeadbeef;
+		let mut next_byte = || -> u8 {
+			seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+			(seed >> 33) as u8
+		};
+
+		let mut tested = 0u32;
+		let mut decoded_ok = 0u32;
+
+		// Part 1: random byte arrays of various lengths (0..=1024).
+		for len in 0..=1024u32 {
+			let input: Vec<u8> = (0..len).map(|_| next_byte()).collect();
+			tested += 1;
+			if check_roundtrip(&input) {
+				decoded_ok += 1;
+			}
+		}
+
+		// Part 2: encode known-valid extrinsics and verify decode→encode roundtrip.
+		// This ensures the test exercises the non-vacuous path.
+		let call = RuntimeCall::System(frame_system::Call::remark { remark: vec![1, 2, 3] });
+		let bare_ext = generic::UncheckedExtrinsic::<
+			Address, RuntimeCall, Signature, TxExtension,
+		>::new_bare(call);
+		let ext = UncheckedExtrinsic::from(bare_ext);
+		let encoded = ext.encode();
+		tested += 1;
+		assert!(
+			check_roundtrip(&encoded),
+			"A freshly encoded bare extrinsic must decode successfully"
+		);
+		decoded_ok += 1;
+
+		assert!(
+			decoded_ok >= 1,
+			"At least one input should have decoded and roundtripped successfully"
+		);
+		eprintln!(
+			"Roundtrip property held: {decoded_ok} successfully decoded (and roundtripped) \
+			 out of {tested} inputs"
+		);
+	}
 }
